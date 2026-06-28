@@ -1,0 +1,2270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nepaltr Pro · Admin Panel</title>
+    <!-- Firebase compat (v9) -->
+    <script src="https://www.gstatic.com/firebasejs/9.1.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.1.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.1.1/firebase-database-compat.js"></script>
+    <!-- Immediate Initialization and Function Declarations -->
+    <script>
+// Initialize Firebase immediately
+const firebaseConfig = {
+    apiKey: "AIzaSyCNt94Sr7tvtY6bLQcYCYeRb_cTcah7fE4",
+    authDomain: "earning-website-644a7.firebaseapp.com",
+    databaseURL: "https://earning-website-644a7-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "earning-website-644a7",
+    storageBucket: "earning-website-644a7.firebasestorage.app",
+    messagingSenderId: "20748471330",
+    appId: "1:20748471330:web:5e8d18499679ecb3d04e7b",
+    measurementId: "G-696F2S2RKN"
+};
+firebase.initializeApp(firebaseConfig);
+const db = window.db = firebase.database();
+const auth = window.auth = firebase.auth();
+
+// Global state
+window.globalUsers = {};
+window.globalDeposits = {};
+window.globalWithdrawals = {};
+window.globalTradeHistory = {};
+window.globalLoginLogs = {};
+window.depositFilter = 'pending';
+window.withdrawalFilter = 'pending';
+window.currentAdmin = null;
+
+// Core UI functions
+window.switchView = function(viewName) {
+    document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.view-panel').forEach(el => el.classList.remove('active'));
+    const menuEl = document.getElementById('li-' + viewName);
+    const panelEl = document.getElementById('view-' + viewName);
+    if (menuEl) menuEl.classList.add('active');
+    if (panelEl) panelEl.classList.add('active');
+    const titles = {
+        overview: ['Overview Dashboard', 'Real-time statistics and system telemetry.'],
+        users: ['User Management', 'Audit customer portfolios, execute balances adjustments, and control access.'],
+        deposits: ['Deposit Requests', 'Approve verified transactions to credit accounts, or decline falsified claims.'],
+        withdrawals: ['Withdrawal Requests', 'Disburse payouts to Esewa credentials and log approved actions.'],
+        settings: ['Global Configurations', 'Define platform limits, parameters, and dynamic payment interfaces.'],
+        tradelogs: ['Security Logs', 'View entire history logs of trading results and direct adjustments.']
+    };
+    const title = document.getElementById('pageTitleText');
+    const subtitle = document.getElementById('pageSubtitleText');
+    if (titles[viewName]) {
+        title.innerText = titles[viewName][0];
+        subtitle.innerText = titles[viewName][1];
+    }
+};
+
+window.toggleSidebar = function() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    if (sidebar) sidebar.classList.toggle('open');
+    if (overlay) overlay.classList.toggle('show');
+};
+
+window.handleSignOut = function() { }; // Logout disabled - no auth system
+window.toggleUserBlock = function(u, b) { 
+    if (confirm(!b ? 'Block this trader?' : 'Unblock this trader account?')) {
+        db.ref('users/' + u).update({isBlocked: !b});
+    }
+};
+
+window.openBalanceModal = function(u, n, b) {
+    document.getElementById('adjust-uid').value = u;
+    document.getElementById('adjust-username').innerText = n;
+    document.getElementById('adjust-current-bal').innerText = 'NPR ' + b.toFixed(2);
+    document.getElementById('balanceModal').style.display = 'flex';
+};
+
+window.closeBalanceModal = function() { document.getElementById('balanceModal').style.display = 'none'; };
+window.openScreenshotModal = function(t, s, d) {
+    document.getElementById('screenshotModalTitle').innerText = t;
+    document.getElementById('screenshotModalImg').src = s;
+    document.getElementById('screenshotModalDetails').innerText = d;
+    document.getElementById('screenshotModal').style.display = 'flex';
+};
+
+window.closeScreenshotModal = function() { document.getElementById('screenshotModal').style.display = 'none'; };
+window.filterUsersTable = function() {
+    const term = document.getElementById('searchUser').value.toLowerCase();
+    document.querySelectorAll('.tr-user-row').forEach(row => {
+        row.style.display = row.getAttribute('data-search').includes(term) ? '' : 'none';
+    });
+};
+
+window.toggleDepositFilter = function(f) { window.depositFilter = f; window.renderDepositsTable && window.renderDepositsTable(); };
+window.toggleWithdrawalFilter = function(f) { window.withdrawalFilter = f; window.renderWithdrawalsTable && window.renderWithdrawalsTable(); };
+window.switchLogTab = function(t) {
+    const tradeBtn = document.getElementById('btn-tab-tradelogs');
+    const loginBtn = document.getElementById('btn-tab-loginlogs');
+    const tradeContent = document.getElementById('tab-content-tradelogs');
+    const loginContent = document.getElementById('tab-content-loginlogs');
+    if (t === 'trade') {
+        tradeBtn.style.borderColor = 'var(--accent)';
+        tradeBtn.style.color = 'var(--accent)';
+        loginBtn.style.borderColor = 'var(--border-glass)';
+        loginBtn.style.color = 'white';
+        tradeContent.style.display = 'block';
+        loginContent.style.display = 'none';
+    } else {
+        loginBtn.style.borderColor = 'var(--accent)';
+        loginBtn.style.color = 'var(--accent)';
+        tradeBtn.style.borderColor = 'var(--border-glass)';
+        tradeBtn.style.color = 'white';
+        tradeContent.style.display = 'none';
+        loginContent.style.display = 'block';
+    }
+};
+
+window.showToast = function(msg, type) {
+    const toast = document.createElement('div');
+    toast.className = `toast-notify ${type}`;
+    toast.innerHTML = `<i class="fas fa-${type === 'error' ? 'exclamation' : 'check'}-circle"></i> <span>${msg}</span>`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+};
+
+// Data rendering functions
+window.updateDashboardMetrics = function() {
+    let totalUsers = 0, totalBalance = 0, pendingD = 0, pendingW = 0, processedT = 0;
+    Object.values(window.globalUsers).forEach(u => {
+        totalUsers++;
+        totalBalance += parseFloat(u.balance || 0);
+    });
+    Object.values(window.globalDeposits).forEach(d => d.status === 'pending' ? pendingD++ : processedT++);
+    Object.values(window.globalWithdrawals).forEach(w => w.status === 'pending' ? pendingW++ : processedT++);
+    
+    document.getElementById('stat-total-users').innerText = totalUsers;
+    document.getElementById('stat-total-balance').innerText = 'NPR ' + totalBalance.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    document.getElementById('stat-pending-deposits').innerText = pendingD;
+    document.getElementById('stat-pending-withdrawals').innerText = pendingW;
+    document.getElementById('stat-processed-count').innerText = processedT;
+    
+    const depBadge = document.getElementById('badge-dep-count');
+    const witBadge = document.getElementById('badge-wit-count');
+    if (pendingD > 0) { depBadge.innerText = pendingD; depBadge.style.display = 'inline-block'; } else { depBadge.style.display = 'none'; }
+    if (pendingW > 0) { witBadge.innerText = pendingW; witBadge.style.display = 'inline-block'; } else { witBadge.style.display = 'none'; }
+};
+
+// SECURITY SYSTEM REMOVED - Initialization will happen in DOMContentLoaded
+
+// SECURITY SYSTEM REMOVED - Initialization will happen in DOMContentLoaded
+    </script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Inter', system-ui, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        :root {
+            --bg: #080a0c;
+            --panel: #11141a;
+            --panel-glass: rgba(17, 20, 26, 0.75);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --accent: #fcd535;
+            --accent-glow: rgba(252, 213, 53, 0.15);
+            --up: #0ecb81;
+            --up-glow: rgba(14, 203, 129, 0.15);
+            --down: #f6465d;
+            --down-glow: rgba(246, 70, 93, 0.15);
+            --text: #ffffff;
+            --text-dim: #90a2b8;
+            --sidebar-width: 260px;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: var(--bg);
+            background-image: radial-gradient(circle at 10% 20%, rgba(252, 213, 53, 0.05) 0%, transparent 40%),
+                              radial-gradient(circle at 90% 80%, rgba(14, 203, 129, 0.05) 0%, transparent 40%);
+            color: var(--text);
+            overflow-x: hidden;
+        }
+
+        /* Loading Overlay */
+        .loading-screen {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 10000;
+            display: none !important;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 20px;
+            transition: opacity 0.5s ease, visibility 0.5s ease;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid var(--border-glass);
+            border-top: 4px solid var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Access Denied Overlay */
+        .auth-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 9999;
+            display: none !important;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .auth-card {
+            background: var(--panel-glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border-glass);
+            max-width: 420px;
+            width: 100%;
+            border-radius: 24px;
+            padding: 40px 30px;
+            text-align: center;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+            animation: zoomIn 0.4s ease;
+        }
+        @keyframes zoomIn {
+            from { transform: scale(0.9); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .auth-card h2 {
+            font-size: 26px;
+            font-weight: 800;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+        .auth-card h2 span {
+            color: var(--accent);
+        }
+        .auth-card p {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-bottom: 25px;
+        }
+        .auth-input-group {
+            margin-bottom: 15px;
+            position: relative;
+        }
+        .auth-input-group i {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-dim);
+        }
+        .auth-input {
+            width: 100%;
+            padding: 14px 15px 14px 45px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-glass);
+            border-radius: 12px;
+            color: white;
+            outline: none;
+            font-size: 15px;
+            transition: all 0.3s ease;
+        }
+        .auth-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 10px var(--accent-glow);
+        }
+        .auth-btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--accent);
+            border: none;
+            border-radius: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            color: #000;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px var(--accent-glow);
+        }
+        .auth-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(252, 213, 53, 0.25);
+        }
+        .denied-icon {
+            font-size: 60px;
+            color: var(--down);
+            margin-bottom: 20px;
+            text-shadow: 0 0 20px var(--down-glow);
+        }
+
+        /* Layout */
+        .wrapper {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--panel-glass);
+            backdrop-filter: blur(15px);
+            border-right: 1px solid var(--border-glass);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            left: 0;
+            top: 0;
+            z-index: 100;
+            transition: transform 0.3s ease;
+        }
+        .sidebar-brand {
+            padding: 25px 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-bottom: 1px solid var(--border-glass);
+        }
+        .logo-box {
+            background: linear-gradient(135deg, #fcd535, #f0b90b);
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            font-size: 20px;
+            color: #000;
+            box-shadow: 0 4px 10px var(--accent-glow);
+        }
+        .brand-name {
+            font-weight: 800;
+            font-size: 18px;
+            letter-spacing: 0.5px;
+        }
+        .brand-name span {
+            color: var(--accent);
+        }
+        .admin-badge {
+            background: var(--accent-glow);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-weight: bold;
+            margin-top: 2px;
+            display: inline-block;
+        }
+        .sidebar-menu {
+            list-style: none;
+            padding: 20px 10px;
+            flex: 1;
+            overflow-y: auto;
+        }
+        .menu-item {
+            margin-bottom: 6px;
+        }
+        .menu-link {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 12px 15px;
+            color: var(--text-dim);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 15px;
+            border-radius: 10px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        .menu-link i {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+            transition: transform 0.2s ease;
+        }
+        .menu-link:hover {
+            color: var(--text);
+            background: rgba(255,255,255,0.03);
+        }
+        .menu-link:hover i {
+            transform: translateX(3px);
+        }
+        .menu-item.active .menu-link {
+            color: #000;
+            background: var(--accent);
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+        .menu-item.active .menu-link i {
+            color: #000;
+        }
+        .sidebar-footer {
+            padding: 20px 15px;
+            border-top: 1px solid var(--border-glass);
+        }
+        .admin-profile-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 12px;
+            border: 1px solid var(--border-glass);
+        }
+        .admin-pfp {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #252b36;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+            border: 2px solid var(--accent);
+        }
+        .admin-details {
+            flex: 1;
+            min-width: 0;
+        }
+        .admin-name {
+            font-size: 13px;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .admin-role {
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+        .logout-btn {
+            display: none;
+            color: var(--text-dim);
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 5px;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        .logout-btn:hover {
+            color: var(--down);
+            background: rgba(246,70,93,0.1);
+        }
+
+        /* Main Content Container */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            padding: 40px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            transition: margin-left 0.3s ease;
+        }
+
+        /* Header */
+        .top-navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .page-title h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+        .page-title p {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .header-btn {
+            background: var(--panel-glass);
+            border: 1px solid var(--border-glass);
+            padding: 10px 18px;
+            border-radius: 10px;
+            color: white;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .header-btn:hover {
+            background: rgba(255,255,255,0.05);
+            border-color: var(--accent);
+        }
+
+        /* Metric Grid */
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+        }
+        .metric-card {
+            background: var(--panel-glass);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border-glass);
+            border-radius: 20px;
+            padding: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+        .metric-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(255,255,255,0.15);
+        }
+        .metric-info h3 {
+            font-size: 14px;
+            color: var(--text-dim);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .metric-value {
+            font-size: 28px;
+            font-weight: 800;
+            margin-top: 10px;
+            letter-spacing: -0.5px;
+        }
+        .metric-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }
+        
+        /* Card Gradients & Glows */
+        .metric-card.users .metric-icon {
+            background: rgba(59, 130, 246, 0.15);
+            color: #3b82f6;
+        }
+        .metric-card.deposits .metric-icon {
+            background: var(--up-glow);
+            color: var(--up);
+        }
+        .metric-card.withdrawals .metric-icon {
+            background: rgba(168, 85, 247, 0.15);
+            color: #a855f7;
+        }
+        .metric-card.pending-d .metric-icon {
+            background: var(--accent-glow);
+            color: var(--accent);
+        }
+        .metric-card.pending-w .metric-icon {
+            background: var(--down-glow);
+            color: var(--down);
+        }
+
+        /* View Panels */
+        .view-panel {
+            background: var(--panel-glass);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border-glass);
+            border-radius: 24px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            animation: fadeIn 0.4s ease;
+            display: none;
+        }
+        .view-panel.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .panel-header h2 {
+            font-size: 22px;
+            font-weight: 800;
+        }
+
+        /* Search bar */
+        .search-box {
+            position: relative;
+            max-width: 320px;
+            width: 100%;
+        }
+        .search-box i {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-dim);
+        }
+        .search-input {
+            width: 100%;
+            padding: 10px 15px 10px 42px;
+            background: rgba(0,0,0,0.2);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            color: white;
+            outline: none;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+
+        /* Modern Tables */
+        .table-responsive {
+            width: 100%;
+            overflow-x: auto;
+            border-radius: 16px;
+            border: 1px solid var(--border-glass);
+        }
+        .admin-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 14px;
+        }
+        .admin-table th {
+            background: rgba(0,0,0,0.25);
+            padding: 16px 20px;
+            font-weight: 700;
+            color: var(--text-dim);
+            border-bottom: 1px solid var(--border-glass);
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+        }
+        .admin-table td {
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            white-space: nowrap;
+        }
+        .admin-table tbody tr {
+            transition: background 0.2s ease;
+        }
+        .admin-table tbody tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .admin-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Badges */
+        .badge {
+            padding: 5px 10px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .badge.pending {
+            background: var(--accent-glow);
+            color: var(--accent);
+            border: 1px solid rgba(252, 213, 53, 0.3);
+        }
+        .badge.approved {
+            background: var(--up-glow);
+            color: var(--up);
+            border: 1px solid rgba(14, 203, 129, 0.3);
+        }
+        .badge.rejected {
+            background: var(--down-glow);
+            color: var(--down);
+            border: 1px solid rgba(246, 70, 93, 0.3);
+        }
+        .badge.blocked {
+            background: var(--down-glow);
+            color: var(--down);
+            border: 1px solid rgba(246, 70, 93, 0.3);
+        }
+        .badge.active {
+            background: var(--up-glow);
+            color: var(--up);
+            border: 1px solid rgba(14, 203, 129, 0.3);
+        }
+
+        /* Action Buttons */
+        .btn-action {
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+        .btn-action.approve {
+            background: var(--up);
+            color: white;
+            box-shadow: 0 4px 10px var(--up-glow);
+        }
+        .btn-action.approve:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 15px rgba(14, 203, 129, 0.35);
+        }
+        .btn-action.reject {
+            background: var(--down);
+            color: white;
+            box-shadow: 0 4px 10px var(--down-glow);
+        }
+        .btn-action.reject:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 15px rgba(246, 70, 93, 0.35);
+        }
+        .btn-action.secondary {
+            background: rgba(255,255,255,0.05);
+            color: white;
+            border: 1px solid var(--border-glass);
+        }
+        .btn-action.secondary:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        .btn-action.block-toggle.blocked {
+            background: var(--up-glow);
+            color: var(--up);
+            border: 1px solid var(--up);
+        }
+        .btn-action.block-toggle.active {
+            background: var(--down-glow);
+            color: var(--down);
+            border: 1px solid var(--down);
+        }
+
+        /* Config Form */
+        .config-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+        }
+        .form-card {
+            background: rgba(0,0,0,0.15);
+            border: 1px solid var(--border-glass);
+            padding: 25px;
+            border-radius: 18px;
+        }
+        .form-card h3 {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: var(--accent);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 10px;
+        }
+        .form-group {
+            margin-bottom: 18px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-dim);
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 12px 15px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            color: white;
+            outline: none;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .form-input:focus {
+            border-color: var(--accent);
+        }
+
+        /* Modal Overlay */
+        .modal-wrap {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .modal-box {
+            background: var(--panel);
+            border: 1px solid var(--border-glass);
+            max-width: 440px;
+            width: 100%;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.5);
+            animation: modalFade 0.3s ease;
+            position: relative;
+        }
+        @keyframes modalFade {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .modal-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 20px;
+            color: var(--text-dim);
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .modal-close:hover {
+            color: white;
+        }
+        
+        /* Toast notification */
+        .toast-notify {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: var(--panel);
+            border: 1px solid var(--accent);
+            color: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            z-index: 11000;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideIn 0.3s ease forwards;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .toast-notify.success {
+            border-color: var(--up);
+        }
+        .toast-notify.error {
+            border-color: var(--down);
+        }
+
+        /* Mobile Hamburger & Sidebar Overrides */
+        .hamburger {
+            display: none;
+            font-size: 24px;
+            color: var(--accent);
+            cursor: pointer;
+            background: transparent;
+            border: none;
+        }
+
+        @media (max-width: 991px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 20px;
+            }
+            .hamburger {
+                display: block;
+            }
+            .sidebar-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.5);
+                z-index: 99;
+                display: none;
+            }
+            .sidebar-overlay.show {
+                display: block;
+            }
+        }
+        /* Additional mobile responsiveness tweaks */
+        @media (max-width: 768px) {
+            .main-content { padding: 18px; }
+            .top-navbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+            .page-title h1 { font-size: 20px; }
+            .page-title p { font-size: 12px; }
+            .header-actions { width: 100%; justify-content: flex-end; }
+            .header-actions .header-btn { padding: 10px 12px; font-size: 13px; flex: none; }
+            .metric-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+            .config-form { grid-template-columns: 1fr; }
+            .form-card { padding: 18px; }
+            .auth-btn { width: 100%; justify-content:center; }
+            .admin-profile-card { padding: 10px; gap: 8px; }
+            .admin-name { font-size: 12px; }
+            .admin-role { font-size: 11px; }
+            .admin-table th, .admin-table td { padding: 12px 10px; font-size: 13px; }
+            .hamburger { display: block; }
+        }
+        @media (max-width: 480px) {
+            .page-title h1 { font-size: 18px; }
+            .header-actions { justify-content: flex-end; }
+            .header-btn { padding: 10px; font-size: 13px; }
+            .metric-grid { grid-template-columns: 1fr; }
+            .top-navbar { align-items: flex-start; }
+            .sidebar { width: 220px; }
+            .logo-box { width: 34px; height: 34px; font-size: 18px; }
+            .brand-name { font-size: 16px; }
+            .menu-link { font-size: 14px; padding: 10px; }
+            .admin-table th, .admin-table td { padding: 10px 8px; font-size: 12px; }
+            .form-input { padding: 10px 12px; font-size: 13px; }
+            .form-card { padding: 14px; border-radius: 12px; }
+            .sidebar-footer .logout-btn { display: inline-block; }
+            .auth-card { padding: 24px 18px; }
+            .auth-input { padding: 10px; }
+            .toast-notify { left: 12px; right: 12px; bottom: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+    <!-- Loading Screen -->
+    <div class="loading-screen" id="loadingScreen">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Authentication Overlay (Modal Login/Signup) -->
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-card" id="loginCard">
+            <h2>NEPAL<span>TR</span> PRO</h2>
+            <p>ADMINISTRATION GATEWAY</p>
+            <div id="authError" style="color: var(--down); font-size: 13px; margin-bottom: 15px; font-weight: 600;"></div>
+            <div class="auth-input-group">
+                <i class="fas fa-envelope"></i>
+                <input type="email" id="adminEmail" class="auth-input" placeholder="Admin Email">
+            </div>
+            <button class="auth-btn" id="loginBtn" type="button">SECURE LOGIN</button>
+        </div>
+    </div>
+
+    <!-- Access Denied Screen -->
+    <div class="auth-overlay" id="deniedOverlay">
+        <div class="auth-card">
+            <i class="fas fa-shield-halved denied-icon"></i>
+            <h2>ACCESS <span>DENIED</span></h2>
+            <p>Your account is authenticated but does not possess administrator permissions. Please contact the platform owner.</p>
+            <button class="auth-btn" style="background: rgba(255,255,255,0.08); color: white; border: 1px solid var(--border-glass); box-shadow: none;" onclick="handleSignOut()">LOGOUT & SWITCH</button>
+        </div>
+    </div>
+
+    <!-- Core Layout -->
+    <div class="wrapper">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <div class="logo-box">N↑</div>
+                <div>
+                    <div class="brand-name">NEPAL<span>TR</span></div>
+                    <span class="admin-badge"><i class="fas fa-shield-alt"></i> PORTAL</span>
+                </div>
+            </div>
+            <ul class="sidebar-menu">
+                <li class="menu-item active" id="li-overview" onclick="switchView('overview')">
+                    <a class="menu-link"><i class="fas fa-chart-pie"></i> Overview</a>
+                </li>
+                <li class="menu-item" id="li-users" onclick="switchView('users')">
+                    <a class="menu-link"><i class="fas fa-users"></i> User Management</a>
+                </li>
+                <li class="menu-item" id="li-deposits" onclick="switchView('deposits')">
+                    <a class="menu-link"><i class="fas fa-wallet"></i> Deposits <span id="badge-dep-count" style="display:none; background: var(--accent); color: black; border-radius: 50%; font-size: 10px; width: 18px; height: 18px; line-height: 18px; text-align: center; font-weight: bold; margin-left: auto;"></span></a>
+                </li>
+                <li class="menu-item" id="li-withdrawals" onclick="switchView('withdrawals')">
+                    <a class="menu-link"><i class="fas fa-arrow-up-from-bracket"></i> Withdrawals <span id="badge-wit-count" style="display:none; background: var(--down); color: white; border-radius: 50%; font-size: 10px; width: 18px; height: 18px; line-height: 18px; text-align: center; font-weight: bold; margin-left: auto;"></span></a>
+                </li>
+                <li class="menu-item" id="li-settings" onclick="switchView('settings')">
+                    <a class="menu-link"><i class="fas fa-sliders"></i> Global Settings</a>
+                </li>
+                <li class="menu-item" id="li-tradelogs" onclick="switchView('tradelogs')">
+                    <a class="menu-link"><i class="fas fa-receipt"></i> Transaction & Trade Logs</a>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="admin-profile-card">
+                    <div class="admin-pfp"><i class="fas fa-user-tie"></i></div>
+                    <div class="admin-details">
+                        <div class="admin-name" id="adminLabelEmail">Admin Account</div>
+                        <div class="admin-role">System Operator</div>
+                    </div>
+                    <button class="logout-btn" onclick="handleSignOut()" title="Logout"><i class="fas fa-sign-out-alt"></i></button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Dashboard Viewport -->
+        <main class="main-content">
+            <header class="top-navbar">
+                <button class="hamburger" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+                <div class="page-title">
+                    <h1 id="pageTitleText">Overview Dashboard</h1>
+                    <p id="pageSubtitleText">Real-time statistics and system telemetry.</p>
+                </div>
+                <div class="header-actions">
+                    <button class="header-btn" onclick="window.location.href='index.html'"><i class="fas fa-arrow-left"></i> Go to Platform</button>
+                </div>
+            </header>
+
+            <!-- Dashboard Overview Panel (Default) -->
+            <section class="view-panel active" id="view-overview">
+                <!-- Metric Cards -->
+                <div class="metric-grid">
+                    <div class="metric-card users">
+                        <div class="metric-info">
+                            <h3>Total Users</h3>
+                            <div class="metric-value" id="stat-total-users">0</div>
+                        </div>
+                        <div class="metric-icon"><i class="fas fa-users"></i></div>
+                    </div>
+                    <div class="metric-card deposits">
+                        <div class="metric-info">
+                            <h3>Total Balance (User Assets)</h3>
+                            <div class="metric-value" id="stat-total-balance">NPR 0</div>
+                        </div>
+                        <div class="metric-icon"><i class="fas fa-sack-dollar"></i></div>
+                    </div>
+                    <div class="metric-card withdrawals">
+                        <div class="metric-info">
+                            <h3>Total Transactions Processed</h3>
+                            <div class="metric-value" id="stat-processed-count">0</div>
+                        </div>
+                        <div class="metric-icon"><i class="fas fa-vault"></i></div>
+                    </div>
+                    <div class="metric-card pending-d">
+                        <div class="metric-info">
+                            <h3>Pending Deposits</h3>
+                            <div class="metric-value" id="stat-pending-deposits">0</div>
+                        </div>
+                        <div class="metric-icon"><i class="fas fa-arrow-down-long"></i></div>
+                    </div>
+                    <div class="metric-card pending-w">
+                        <div class="metric-info">
+                            <h3>Pending Withdrawals</h3>
+                            <div class="metric-value" id="stat-pending-withdrawals">0</div>
+                        </div>
+                        <div class="metric-icon"><i class="fas fa-arrow-up-long"></i></div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 30px; margin-top: 30px;">
+                    <!-- Pending Queue Quick Look -->
+                    <div class="form-card" style="grid-column: 1 / span 2;">
+                        <h3>Active Requests Overview</h3>
+                        <p style="color: var(--text-dim); margin-top: -10px; margin-bottom: 20px; font-size: 13px;">View pending deposits and withdrawals requiring authorization instantly.</p>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                            <button class="auth-btn" style="width: auto; padding: 12px 25px;" onclick="switchView('deposits')"><i class="fas fa-wallet"></i> Go to Deposit Queue</button>
+                            <button class="auth-btn" style="width: auto; padding: 12px 25px; background: #9c27b0; box-shadow: 0 4px 15px rgba(156,39,176,0.2);" onclick="switchView('withdrawals')"><i class="fas fa-arrow-up-from-bracket"></i> Go to Withdrawal Queue</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- User Management Panel -->
+            <section class="view-panel" id="view-users">
+                <div class="panel-header">
+                    <h2>Platform Users</h2>
+                    <div class="search-box">
+                        <i class="fas fa-search"></i>
+                        <input type="text" class="search-input" id="searchUser" placeholder="Search by name or email..." oninput="filterUsersTable()">
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Trader Info</th>
+                                <th>Joined</th>
+                                <th>Balance (NPR)</th>
+                                <th>Trades Count</th>
+                                <th>Losses</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersTableBody">
+                            <tr>
+                                <td colspan="7" style="text-align: center; color: var(--text-dim);">No user accounts found</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Deposits Panel -->
+            <section class="view-panel" id="view-deposits">
+                <div class="panel-header">
+                    <h2>Deposit Queue</h2>
+                    <div style="display:flex; gap:10px;">
+                        <button class="header-btn" onclick="toggleDepositFilter('pending')">Pending Only</button>
+                        <button class="header-btn" onclick="toggleDepositFilter('all')">View All Logs</button>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>User ID / Email</th>
+                                <th>Amount (NPR)</th>
+                                <th>Transaction ID</th>
+                                <th>Screenshot Reference</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="depositsTableBody">
+                            <tr>
+                                <td colspan="7" style="text-align: center; color: var(--text-dim);">No deposit records</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Withdrawals Panel -->
+            <section class="view-panel" id="view-withdrawals">
+                <div class="panel-header">
+                    <h2>Withdrawal Queue</h2>
+                    <div style="display:flex; gap:10px;">
+                        <button class="header-btn" onclick="toggleWithdrawalFilter('pending')">Pending Only</button>
+                        <button class="header-btn" onclick="toggleWithdrawalFilter('all')">View All Logs</button>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>User Details</th>
+                                <th>Amount (NPR)</th>
+                                <th>Esewa Account</th>
+                                <th>Full Name</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="withdrawalsTableBody">
+                            <tr>
+                                <td colspan="7" style="text-align: center; color: var(--text-dim);">No withdrawal records</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- System Settings Panel -->
+            <section class="view-panel" id="view-settings">
+                <div class="panel-header">
+                    <h2>Limits & System Configuration</h2>
+                </div>
+                <div class="config-form">
+                    <!-- Limits Card -->
+                    <div class="form-card">
+                        <h3>Platform Trading Bounds</h3>
+                        <div class="form-group">
+                            <label>Minimum Deposit Amount (NPR)</label>
+                            <input type="number" id="cfg-min-dep" class="form-input" value="300">
+                        </div>
+                        <div class="form-group">
+                            <label>Maximum Deposit Amount (NPR)</label>
+                            <input type="number" id="cfg-max-dep" class="form-input" value="100000">
+                        </div>
+                        <div class="form-group">
+                            <label>Minimum Withdrawal Amount (NPR)</label>
+                            <input type="number" id="cfg-min-wit" class="form-input" value="200">
+                        </div>
+                        <div class="form-group">
+                            <label>Maximum Withdrawal Amount (NPR)</label>
+                            <input type="number" id="cfg-max-wit" class="form-input" value="50000">
+                        </div>
+                        <div class="form-group">
+                            <label>Minimum Single Trade Size (NPR)</label>
+                            <input type="number" id="cfg-min-trd" class="form-input" value="300">
+                        </div>
+                        <div class="form-group">
+                            <label>Maximum Single Trade Size (NPR)</label>
+                            <input type="number" id="cfg-max-trd" class="form-input" value="10000">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Trades Per Day</label>
+                            <input type="number" id="cfg-max-trades-day" class="form-input" value="50">
+                        </div>
+                        <div class="form-group">
+                            <label>Min Interval Between Trades (sec)</label>
+                            <input type="number" id="cfg-min-interval-trd" class="form-input" value="5">
+                        </div>
+                        <div class="form-group">
+                            <label>Win Rate (%)</label>
+                            <input type="number" id="cfg-win-rate" class="form-input" value="10">
+                            <span style="color:var(--text-dim); font-size:12px; margin-top:6px; display:block;">Set the platform win probability as a percentage (e.g. 10 for 10%).</span>
+                        </div>
+                    </div>
+
+                    <!-- Payment QR Configuration -->
+                    <div class="form-card">
+                        <h3>Deposit Gateway (QR Code)</h3>
+                        <div style="text-align:center; margin-bottom: 20px; background: rgba(0,0,0,0.2); padding: 15px; border-radius:12px; border: 1px solid var(--border-glass);">
+                            <img id="cfg-qr-preview" src="https://via.placeholder.com/150x150/181a20/fcd535?text=QR+Code" style="max-width:150px; border: 1px solid var(--accent); border-radius: 8px; max-height:150px;" alt="QR Code Preview">
+                        </div>
+                        <div class="form-group">
+                            <label>QR Code Image URL</label>
+                            <input type="text" id="cfg-qr-url" class="form-input" placeholder="Paste direct image link..." onchange="document.getElementById('cfg-qr-preview').src = this.value || 'https://via.placeholder.com/150x150/181a20/fcd535?text=QR+Code'">
+                            <span style="color:var(--text-dim); font-size:11px; margin-top:5px; display:block;">Use a public hosting service (like Postimg, ImgBB, or Imgur) and paste the direct image link here.</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 30px; display: flex; justify-content: flex-end;">
+                    <button class="auth-btn" style="width: auto; padding: 14px 40px;" onclick="saveSystemSettings()"><i class="fas fa-floppy-disk"></i> SAVE SETTINGS</button>
+                </div>
+            </section>
+
+            <!-- Logs Panel -->
+            <section class="view-panel" id="view-tradelogs">
+                <div class="panel-header">
+                    <h2>Platform Activity Audit</h2>
+                    <div style="display:flex; gap:10px;">
+                        <button class="header-btn" id="btn-tab-tradelogs" style="border-color: var(--accent); color: var(--accent);" onclick="switchLogTab('trade')">Trade & Financials</button>
+                        <button class="header-btn" id="btn-tab-loginlogs" onclick="switchLogTab('login')">User Login Activity</button>
+                    </div>
+                </div>
+
+                <!-- Trade Logs Content -->
+                <div class="table-responsive" id="tab-content-tradelogs">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>User ID</th>
+                                <th>Action Type</th>
+                                <th>Size (NPR)</th>
+                                <th>Result / details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logsTableBody">
+                            <tr>
+                                <td colspan="5" style="text-align: center; color: var(--text-dim);">No transactions logged</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Login Logs Content -->
+                <div class="table-responsive" id="tab-content-loginlogs" style="display: none;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>User ID / Email</th>
+                                <th>Name</th>
+                                <th>User UID</th>
+                            </tr>
+                        </thead>
+                        <tbody id="loginLogsTableBody">
+                            <tr>
+                                <td colspan="4" style="text-align: center; color: var(--text-dim);">No login sessions logged</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Balance Adjustment Modal -->
+    <div class="modal-wrap" id="balanceModal">
+        <div class="modal-box">
+            <span class="modal-close" onclick="closeBalanceModal()">✕</span>
+            <div class="modal-title">Adjust Balance</div>
+            <input type="hidden" id="adjust-uid">
+            <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 20px;">
+                You are adjusting the balance for: <strong id="adjust-username" style="color: white;">User</strong>
+            </p>
+            <div class="form-group">
+                <label>Current Balance: <span id="adjust-current-bal" style="color: var(--accent); font-weight:bold;">NPR 0.00</span></label>
+            </div>
+            <div class="form-group">
+                <label>Adjustment Operation</label>
+                <select id="adjust-op" class="form-input" style="background:#181a20;">
+                    <option value="add">Add Funds (+)</option>
+                    <option value="sub">Subtract Funds (-)</option>
+                    <option value="set">Set Direct Balance (=)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Amount (NPR)</label>
+                <input type="number" id="adjust-amount" class="form-input" min="0.01" step="0.01" placeholder="Enter amount...">
+            </div>
+            <div style="display:flex; gap:10px; justify-content: flex-end; margin-top:20px;">
+                <button class="btn-action secondary" onclick="closeBalanceModal()">Cancel</button>
+                <button class="btn-action approve" onclick="saveBalanceAdjustment()"><i class="fas fa-check"></i> Execute</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Screenshot Viewer Modal -->
+    <div class="modal-wrap" id="screenshotModal">
+        <div class="modal-box" style="max-width: 600px; text-align: center;">
+            <span class="modal-close" onclick="closeScreenshotModal()">✕</span>
+            <div class="modal-title" id="screenshotModalTitle">Verification Screenshot</div>
+            <div style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 12px; border: 1px solid var(--border-glass); overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 250px;">
+                <img id="screenshotModalImg" src="" style="max-width: 100%; max-height: 60vh; border-radius: 8px; object-fit: contain;" alt="Deposit receipt">
+            </div>
+            <div style="margin-top: 15px; color: var(--text-dim); font-size: 13px;" id="screenshotModalDetails">Transaction Reference</div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        // ===== DEFINE ALL CRITICAL FUNCTIONS FIRST =====
+        // These must be defined immediately so HTML onclick handlers can access them
+        
+        window.switchView = function(viewName) {
+            // Remove active classes
+            document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.view-panel').forEach(el => el.classList.remove('active'));
+
+            // Set active
+            const menuEl = document.getElementById('li-' + viewName);
+            const panelEl = document.getElementById('view-' + viewName);
+            
+            if (menuEl) menuEl.classList.add('active');
+            if (panelEl) panelEl.classList.add('active');
+
+            // Header titles updating
+            const headerTitle = document.getElementById('pageTitleText');
+            const headerSubtitle = document.getElementById('pageSubtitleText');
+
+            if (viewName === 'overview') {
+                headerTitle.innerText = "Overview Dashboard";
+                headerSubtitle.innerText = "Real-time statistics and system telemetry.";
+            } else if (viewName === 'users') {
+                headerTitle.innerText = "User Management";
+                headerSubtitle.innerText = "Audit customer portfolios, execute balances adjustments, and control access.";
+            } else if (viewName === 'deposits') {
+                headerTitle.innerText = "Deposit Requests";
+                headerSubtitle.innerText = "Approve verified transactions to credit accounts, or decline falsified claims.";
+            } else if (viewName === 'withdrawals') {
+                headerTitle.innerText = "Withdrawal Requests";
+                headerSubtitle.innerText = "Disburse payouts to Esewa credentials and log approved actions.";
+            } else if (viewName === 'settings') {
+                headerTitle.innerText = "Global Configurations";
+                headerSubtitle.innerText = "Define platform limits, parameters, and dynamic payment interfaces.";
+            } else if (viewName === 'tradelogs') {
+                headerTitle.innerText = "Security Logs";
+                headerSubtitle.innerText = "View entire history logs of trading results and direct adjustments.";
+            }
+
+            // Close responsive sidebar if open
+            if (window.innerWidth <= 991) {
+                window.toggleSidebar();
+            }
+        };
+
+        window.toggleSidebar = function() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (sidebar) sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('show');
+        };
+
+        // ===== END CRITICAL FUNCTIONS =====
+
+        // Setup Login Button
+        function setupLoginBtn() {
+            const loginBtn = document.getElementById('loginBtn');
+            if (loginBtn) {
+                loginBtn.addEventListener('click', async () => {
+                    const email = document.getElementById('adminEmail').value.trim();
+                    const pass = document.getElementById('adminPassword').value;
+                    const errEl = document.getElementById('authError');
+                    errEl.innerText = '';
+
+                    if (!email || !pass) {
+                        errEl.innerText = 'Please complete both fields.';
+                        return;
+                    }
+
+                    try {
+                        document.getElementById('loadingScreen').style.visibility = 'visible';
+                        document.getElementById('loadingScreen').style.opacity = '1';
+                        await auth.signInWithEmailAndPassword(email, pass);
+                    } catch (e) {
+                        document.getElementById('loadingScreen').style.opacity = '0';
+                        setTimeout(() => {
+                            document.getElementById('loadingScreen').style.visibility = 'hidden';
+                        }, 500);
+                        
+                        // Show user-friendly error messages
+                        if (e.code === 'auth/user-not-found') {
+                            errEl.innerText = 'Email not found. Check your email and try again.';
+                        } else if (e.code === 'auth/wrong-password') {
+                            errEl.innerText = 'Password is incorrect. Please try again.';
+                        } else if (e.code === 'auth/invalid-login-credentials') {
+                            errEl.innerText = 'Email or password is incorrect.';
+                        } else if (e.code === 'auth/invalid-email') {
+                            errEl.innerText = 'Invalid email format.';
+                        } else {
+                            errEl.innerText = e.message;
+                        }
+                    }
+                });
+            }
+        }
+
+        // Call setup when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', setupLoginBtn);
+        } else {
+            setupLoginBtn();
+        }
+
+        // Define all functions BEFORE state initialization
+        // so HTML event listeners can access them
+        // Expose filter and action functions globally
+        window.toggleDepositFilter = function(filterVal) {
+            depositFilter = filterVal;
+            renderDepositsTable();
+        };
+
+        window.toggleWithdrawalFilter = function(filterVal) {
+            withdrawalFilter = filterVal;
+            renderWithdrawalsTable();
+        };
+
+        window.filterUsersTable = function() {
+            const term = document.getElementById('searchUser').value.toLowerCase();
+            document.querySelectorAll('.tr-user-row').forEach(row => {
+                const searchStr = row.getAttribute('data-search');
+                if (searchStr.includes(term)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        };
+
+        // Local state
+        let currentAdmin = null;
+        let globalUsers = {};
+        let globalDeposits = {};
+        let globalWithdrawals = {};
+        let globalTradeHistory = {};
+        let globalLoginLogs = {};
+        let depositFilter = 'pending'; // pending | all
+        let withdrawalFilter = 'pending'; // pending | all
+
+        // SECURITY SYSTEM REMOVED - Dashboard loads directly
+        document.addEventListener('DOMContentLoaded', () => {
+            // Wait for Firebase auth to be ready
+            auth.onAuthStateChanged(user => {
+                if (!user) {
+                    console.log('No user logged in, redirecting to login');
+                    window.location.href = 'index.html';
+                    return;
+                }
+                
+                console.log('User authenticated:', user.uid, user.email);
+                
+                // Setup admin user and hide overlays
+                window.currentAdmin = { uid: user.uid, email: user.email };
+                const adminLabel = document.getElementById('adminLabelEmail');
+                if (adminLabel) adminLabel.innerText = user.email || 'Admin';
+                
+                const authOverlay = document.getElementById('authOverlay');
+                if (authOverlay) authOverlay.style.display = 'none';
+                
+                const deniedOverlay = document.getElementById('deniedOverlay');
+                if (deniedOverlay) deniedOverlay.style.display = 'none';
+                
+                // Show dashboard
+                const loadingScreen = document.getElementById('loadingScreen');
+                if (loadingScreen) loadingScreen.style.display = 'none';
+                
+                const mainContent = document.querySelector('main.main-content');
+                if (mainContent) mainContent.style.display = 'flex';
+                
+                // Initialize dashboard and listeners
+                initializeDashboard();
+            });
+        });
+
+        // Initialize Data Listeners
+        function initializeDashboard() {
+            // Listen for system stats (Users Count & User Assets)
+            db.ref('users').on('value', (snap) => {
+                globalUsers = snap.val() || {};
+                renderUsersTable();
+                updateDashboardMetrics();
+            }, (err) => {
+                console.error('Error syncing users:', err);
+                // Don't show alert on permission errors - just log
+                if (err.code !== 'PERMISSION_DENIED') {
+                    alert('Error loading users: ' + err.message);
+                }
+            });
+
+            // Listen for Deposits
+            db.ref('depositRequests').on('value', (snap) => {
+                globalDeposits = snap.val() || {};
+                renderDepositsTable();
+                updateDashboardMetrics();
+            }, (err) => {
+                console.error('Error syncing deposits:', err);
+                if (err.code !== 'PERMISSION_DENIED') {
+                    alert('Error loading deposits: ' + err.message);
+                }
+            });
+
+            // Listen for Withdrawals
+            db.ref('withdrawRequests').on('value', (snap) => {
+                globalWithdrawals = snap.val() || {};
+                renderWithdrawalsTable();
+                updateDashboardMetrics();
+            }, (err) => {
+                console.error('Error syncing withdrawals:', err);
+                if (err.code !== 'PERMISSION_DENIED') {
+                    alert('Error loading withdrawals: ' + err.message);
+                }
+            });
+
+            // Listen for System Configuration
+            db.ref('adminSettings').on('value', (snap) => {
+                if (snap.exists()) {
+                    const cfg = snap.val();
+                    document.getElementById('cfg-min-dep').value = cfg.minDeposit || 300;
+                    document.getElementById('cfg-max-dep').value = cfg.maxDeposit || 100000;
+                    document.getElementById('cfg-min-wit').value = cfg.minWithdraw || 200;
+                    document.getElementById('cfg-max-wit').value = cfg.maxWithdraw || 50000;
+                    document.getElementById('cfg-min-trd').value = cfg.minTrade || 300;
+                    document.getElementById('cfg-max-trd').value = cfg.maxTrade || 10000;
+                    document.getElementById('cfg-qr-url').value = cfg.qrImage || '';
+                    document.getElementById('cfg-qr-preview').src = cfg.qrImage || 'https://via.placeholder.com/150x150/181a20/fcd535?text=QR+Code';
+                    // New global settings
+                    document.getElementById('cfg-max-trades-day').value = cfg.maxTradesPerDay || 50;
+                    document.getElementById('cfg-min-interval-trd').value = cfg.minIntervalBetweenTradesSec || 5;
+                    if (typeof cfg.winRate !== 'undefined') {
+                        const w = parseFloat(cfg.winRate);
+                        if (!isNaN(w)) {
+                            // if stored as fraction (0.1), convert to percent for display
+                            document.getElementById('cfg-win-rate').value = w > 1 ? w : Math.round(w * 100);
+                        }
+                    }
+                }
+            });
+
+            // Listen for Logs
+            db.ref('tradeHistory').on('value', (snap) => {
+                globalTradeHistory = snap.val() || {};
+                renderLogsTable();
+            });
+
+            // Listen for Login Logs
+            db.ref('loginLogs').on('value', (snap) => {
+                globalLoginLogs = snap.val() || {};
+                renderLoginLogsTable();
+            });
+        }
+
+        // Live stats counter updates
+        function updateDashboardMetrics() {
+            let totalUsers = 0;
+            let totalBalance = 0;
+            let pendingD = 0;
+            let pendingW = 0;
+            let processedT = 0;
+
+            // Users Calculations
+            Object.values(globalUsers).forEach(user => {
+                totalUsers++;
+                totalBalance += parseFloat(user.balance || 0);
+            });
+
+            // Deposits Calculations
+            Object.values(globalDeposits).forEach(dep => {
+                if (dep.status === 'pending') pendingD++;
+                else processedT++;
+            });
+
+            // Withdrawals Calculations
+            Object.values(globalWithdrawals).forEach(wit => {
+                if (wit.status === 'pending') pendingW++;
+                else processedT++;
+            });
+
+            document.getElementById('stat-total-users').innerText = totalUsers;
+            document.getElementById('stat-total-balance').innerText = 'NPR ' + totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('stat-pending-deposits').innerText = pendingD;
+            document.getElementById('stat-pending-withdrawals').innerText = pendingW;
+            document.getElementById('stat-processed-count').innerText = processedT;
+
+            // Header notifications
+            const depBadge = document.getElementById('badge-dep-count');
+            const witBadge = document.getElementById('badge-wit-count');
+
+            if (pendingD > 0) {
+                depBadge.innerText = pendingD;
+                depBadge.style.display = 'inline-block';
+            } else {
+                depBadge.style.display = 'none';
+            }
+
+            if (pendingW > 0) {
+                witBadge.innerText = pendingW;
+                witBadge.style.display = 'inline-block';
+            } else {
+                witBadge.style.display = 'none';
+            }
+        }
+
+        // View Switching Router - MOVED TO GLOBAL SCOPE ABOVE
+
+        // Render Users Table
+        function renderUsersTable() {
+            const body = document.getElementById('usersTableBody');
+            let html = '';
+
+            const usersArr = Object.entries(globalUsers);
+            if (usersArr.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No user accounts found</td></tr>';
+                return;
+            }
+
+            usersArr.sort((a,b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+
+            usersArr.forEach(([uid, u]) => {
+                const bal = parseFloat(u.balance || 0);
+                const blockStatus = u.isBlocked === true ? 'blocked' : 'active';
+                const createdDate = u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A';
+
+                html += `
+                <tr class="tr-user-row" data-search="${(u.name || '').toLowerCase()} ${(u.email || '').toLowerCase()}">
+                    <td>
+                        <div style="display:flex; align-items:center; gap: 10px;">
+                            <div class="admin-pfp" style="width:32px; height:32px; border-color:${u.isBlocked ? 'var(--down)' : 'var(--accent)'}"><i class="fas fa-user"></i></div>
+                            <div>
+                                <strong style="font-size:14px; display:block;">${u.name || 'Anonymous'}</strong>
+                                <span style="font-size:11px; color:var(--text-dim); display:block;">${u.email}</span>
+                            </div>
+                        </div>
+                    </td>
+                    <td style="color:var(--text-dim);">${createdDate}</td>
+                    <td style="font-weight:700;">NPR ${bal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td style="text-align:center;">${u.tradeCount || 0}</td>
+                    <td style="color:var(--down); text-align:center;">${u.lossCount || 0}</td>
+                    <td>
+                        <span class="badge ${blockStatus}">${blockStatus.toUpperCase()}</span>
+                    </td>
+                    <td>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn-action approve" onclick="openBalanceModal('${uid}', '${u.name || u.email}', ${bal})"><i class="fas fa-coins"></i> Balance</button>
+                            <button class="btn-action block-toggle ${blockStatus}" onclick="toggleUserBlock('${uid}', ${u.isBlocked === true})">
+                                ${u.isBlocked === true ? '<i class="fas fa-unlock"></i> Unblock' : '<i class="fas fa-ban"></i> Block'}
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                `;
+            });
+
+            body.innerHTML = html;
+        }
+
+        // Filter Portfolios Users List
+        function filterUsersTable() {
+            const term = document.getElementById('searchUser').value.toLowerCase();
+            document.querySelectorAll('.tr-user-row').forEach(row => {
+                const searchStr = row.getAttribute('data-search');
+                if (searchStr.includes(term)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        }
+
+        // Toggle user blocking
+        window.toggleUserBlock = function(uid, currentlyBlocked) {
+            const nextState = !currentlyBlocked;
+            const message = nextState ? 'Block this trader? They will be unable to open new trades.' : 'Unblock this trader account?';
+            
+            if (confirm(message)) {
+                db.ref('users/' + uid).update({
+                    isBlocked: nextState
+                }).then(() => {
+                    showToast('User account successfully updated!', 'success');
+                }).catch(err => {
+                    showToast(err.message, 'error');
+                });
+            }
+        };
+
+        // Open Balance Adjust Mode
+        window.openBalanceModal = function(uid, name, curBal) {
+            document.getElementById('adjust-uid').value = uid;
+            document.getElementById('adjust-username').innerText = name;
+            document.getElementById('adjust-current-bal').innerText = 'NPR ' + curBal.toFixed(2);
+            document.getElementById('adjust-amount').value = '';
+            document.getElementById('balanceModal').style.display = 'flex';
+        };
+
+        window.closeBalanceModal = function() {
+            document.getElementById('balanceModal').style.display = 'none';
+        };
+
+        window.openScreenshotModal = (title, src, details) => {
+            document.getElementById('screenshotModalTitle').innerText = title;
+            document.getElementById('screenshotModalImg').src = src || 'https://via.placeholder.com/400x300/181a20/fcd535?text=No+Image';
+            document.getElementById('screenshotModalDetails').innerText = details;
+            document.getElementById('screenshotModal').style.display = 'flex';
+        };
+
+        window.closeScreenshotModal = () => {
+            document.getElementById('screenshotModal').style.display = 'none';
+        };
+
+        window.saveBalanceAdjustment = function() {
+            const uid = document.getElementById('adjust-uid').value;
+            const op = document.getElementById('adjust-op').value;
+            const rawAmt = parseFloat(document.getElementById('adjust-amount').value);
+
+            if (!rawAmt || rawAmt <= 0) {
+                alert('Please enter a valid numeric value greater than zero.');
+                return;
+            }
+
+            db.ref('users/' + uid + '/balance').once('value', async (snap) => {
+                const currentBalance = snap.val() || 0;
+                let newBal = currentBalance;
+
+                if (op === 'add') newBal += rawAmt;
+                else if (op === 'sub') newBal = Math.max(0, currentBalance - rawAmt);
+                else if (op === 'set') newBal = rawAmt;
+
+                // Execute Balance Update
+                await db.ref('users/' + uid).update({ balance: newBal });
+
+                // If balance decreased, write it as trade history LOSS so they see it.
+                // Note: Only write if subtraction. Or write adjustment logs as desired
+                if (newBal < currentBalance) {
+                    const decrease = currentBalance - newBal;
+                    db.ref('tradeHistory').push({
+                        uid: uid,
+                        type: 'DEDUCTION',
+                        amount: decrease,
+                        result: 'loss',
+                        timestamp: Date.now(),
+                        oldBalance: currentBalance,
+                        newBalance: newBal
+                    });
+                } else if (newBal > currentBalance) {
+                    const increase = newBal - currentBalance;
+                    db.ref('tradeHistory').push({
+                        uid: uid,
+                        type: 'CREDIT',
+                        amount: increase,
+                        result: 'win',
+                        timestamp: Date.now(),
+                        oldBalance: currentBalance,
+                        newBalance: newBal
+                    });
+                }
+
+                showToast('Balance updated and logged successfully!', 'success');
+                closeBalanceModal();
+            });
+        }
+
+        // Deposits Processing
+        function toggleDepositFilter(filterVal) {
+            depositFilter = filterVal;
+            renderDepositsTable();
+        }
+
+        function renderDepositsTable() {
+            const body = document.getElementById('depositsTableBody');
+            let html = '';
+
+            const depArr = Object.entries(globalDeposits);
+            console.log('Rendering deposits table:', depArr.length, 'deposits found', globalDeposits);
+            
+            if (depArr.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No deposit requests submitted</td></tr>';
+                return;
+            }
+
+            // sort chronologically (newest first)
+            depArr.sort((a, b) => b[1].timestamp - a[1].timestamp);
+
+            let rowCount = 0;
+            depArr.forEach(([key, d]) => {
+                if (depositFilter === 'pending' && d.status !== 'pending') return;
+                rowCount++;
+
+                const userEmail = globalUsers[d.uid]?.email || d.uid;
+                const userName = globalUsers[d.uid]?.name || 'Trader';
+                const dDate = new Date(d.timestamp).toLocaleString();
+                const statusBadge = d.status === 'pending' ? 'pending' : (d.status === 'approved' ? 'approved' : 'rejected');
+
+                let actionHtml = '';
+                if (d.status === 'pending') {
+                    actionHtml = `
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn-action approve" onclick="processDeposit('${key}', '${d.uid}', ${d.amount}, true)"><i class="fas fa-check"></i> Approve</button>
+                            <button class="btn-action reject" onclick="processDeposit('${key}', '${d.uid}', ${d.amount}, false)"><i class="fas fa-xmark"></i> Reject</button>
+                        </div>
+                    `;
+                } else {
+                    actionHtml = `<span style="color:var(--text-dim); font-size:12px; font-weight:600;">Processed</span>`;
+                }
+
+                html += `
+                <tr>
+                    <td style="color:var(--text-dim); font-size:12px;">${dDate}</td>
+                    <td>
+                        <strong>${userName}</strong>
+                        <span style="font-size:11px; display:block; color:var(--text-dim);">${userEmail}</span>
+                    </td>
+                    <td style="font-weight:700; color:var(--up);">+NPR ${d.amount.toFixed(2)}</td>
+                    <td style="font-family:monospace; font-weight:bold;">${d.txInfo || 'N/A'}</td>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            ${d.screenshotUrl ? `
+                                <img src="${d.screenshotUrl}" style="width:40px; height:40px; border-radius:6px; object-fit:cover; border:1px solid var(--border-glass); cursor:pointer; box-shadow: 0 0 5px var(--accent-glow);" onclick="window.openScreenshotModal('Deposit NPR ${d.amount} screenshot', '${d.screenshotUrl}', 'Tx ID: ${(d.txInfo || 'N/A').replace(/'/g, '')} - User: ${userEmail}')">
+                            ` : ''}
+                            <span style="font-size:12px; font-weight:500; cursor:pointer;" onclick="if('${d.screenshotUrl || ''}'){window.openScreenshotModal('Deposit NPR ${d.amount} screenshot', '${d.screenshotUrl || ''}', 'Tx ID: ${(d.txInfo || 'N/A').replace(/'/g, '')} - User: ${userEmail}')}else{alert('No image uploaded')}">
+                                <i class="fas fa-file-image" style="color:var(--accent);"></i> ${d.fileName || 'View Image'}
+                            </span>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="badge ${statusBadge}">${d.status.toUpperCase()}</span>
+                    </td>
+                    <td>${actionHtml}</td>
+                </tr>
+                `;
+            });
+
+            if (rowCount === 0) {
+                body.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No ${depositFilter} deposit requests found</td></tr>`;
+            } else {
+                body.innerHTML = html;
+            }
+        }
+
+        window.processDeposit = async function(key, uid, amount, isApproved) {
+            const nextStatus = isApproved ? 'approved' : 'rejected';
+            if (confirm(`Are you sure you want to ${nextStatus} this deposit of NPR ${amount}?`)) {
+                // Update status in requests
+                await db.ref('depositRequests/' + key).update({ status: nextStatus });
+
+                if (isApproved) {
+                    // Credit user's balance
+                    const userRef = db.ref('users/' + uid);
+                    const userSnap = await userRef.once('value');
+                    if (userSnap.exists()) {
+                        const curBal = parseFloat(userSnap.val().balance || 0);
+                        const newBal = curBal + amount;
+                        await userRef.update({ balance: newBal });
+
+                        // Log under tradeHistory as CREDIT
+                        await db.ref('tradeHistory').push({
+                            uid: uid,
+                            type: 'DEPOSIT',
+                            amount: amount,
+                            result: 'win',
+                            timestamp: Date.now(),
+                            oldBalance: curBal,
+                            newBalance: newBal
+                        });
+                    }
+                }
+
+                showToast(`Deposit successfully ${nextStatus}!`, 'success');
+            }
+        };
+
+        // Test: Create manual deposit for debugging
+        window.createTestDeposit = async function() {
+            const uid = prompt('Enter User UID (or leave blank for test user)') || 'test_user_001';
+            const amount = parseFloat(prompt('Enter deposit amount (NPR)')) || 1000;
+            
+            if (!uid || !amount || amount <= 0) {
+                alert('Invalid input');
+                return;
+            }
+            
+            try {
+                const result = await db.ref('depositRequests').push({
+                    uid: uid,
+                    amount: amount,
+                    fileName: 'test_screenshot.png',
+                    screenshotUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+                    txInfo: 'TEST_TX_' + Date.now(),
+                    status: 'pending',
+                    timestamp: Date.now()
+                });
+                alert('Test deposit created with ID: ' + result.key);
+            } catch (err) {
+                alert('Error creating test deposit: ' + err.message);
+                console.error(err);
+            }
+        };
+
+        // Withdrawals Processing
+        function toggleWithdrawalFilter(filterVal) {
+            withdrawalFilter = filterVal;
+            renderWithdrawalsTable();
+        }
+
+        function renderWithdrawalsTable() {
+            const body = document.getElementById('withdrawalsTableBody');
+            let html = '';
+
+            const witArr = Object.entries(globalWithdrawals);
+            if (witArr.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No withdrawal requests submitted</td></tr>';
+                return;
+            }
+
+            // sort chronologically (newest first)
+            witArr.sort((a, b) => b[1].timestamp - a[1].timestamp);
+
+            let rowCount = 0;
+            witArr.forEach(([key, w]) => {
+                if (withdrawalFilter === 'pending' && w.status !== 'pending') return;
+                rowCount++;
+
+                const userEmail = globalUsers[w.uid]?.email || w.uid;
+                const userName = globalUsers[w.uid]?.name || 'Trader';
+                const wDate = new Date(w.timestamp).toLocaleString();
+                const statusBadge = w.status === 'pending' ? 'pending' : (w.status === 'approved' ? 'approved' : 'rejected');
+
+                let actionHtml = '';
+                if (w.status === 'pending') {
+                    actionHtml = `
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn-action approve" onclick="processWithdrawal('${key}', '${w.uid}', ${w.amount}, true)"><i class="fas fa-check"></i> Approve</button>
+                            <button class="btn-action reject" onclick="processWithdrawal('${key}', '${w.uid}', ${w.amount}, false)"><i class="fas fa-xmark"></i> Reject</button>
+                        </div>
+                    `;
+                } else {
+                    actionHtml = `<span style="color:var(--text-dim); font-size:12px; font-weight:600;">Processed</span>`;
+                }
+
+                html += `
+                <tr>
+                    <td style="color:var(--text-dim); font-size:12px;">${wDate}</td>
+                    <td>
+                        <strong>${userName}</strong>
+                        <span style="font-size:11px; display:block; color:var(--text-dim);">${userEmail}</span>
+                    </td>
+                    <td style="font-weight:700; color:var(--down);">-NPR ${w.amount.toFixed(2)}</td>
+                    <td style="font-family:monospace; font-weight:bold; color:var(--accent);">${w.esewa || 'N/A'}</td>
+                    <td style="font-weight:600;">${w.fullName || 'N/A'}</td>
+                    <td>
+                        <span class="badge ${statusBadge}">${w.status.toUpperCase()}</span>
+                    </td>
+                    <td>${actionHtml}</td>
+                </tr>
+                `;
+            });
+
+            if (rowCount === 0) {
+                body.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No ${withdrawalFilter} withdrawal requests found</td></tr>`;
+            } else {
+                body.innerHTML = html;
+            }
+        }
+
+        window.processWithdrawal = async function(key, uid, amount, isApproved) {
+            const nextStatus = isApproved ? 'approved' : 'rejected';
+            if (confirm(`Are you sure you want to ${nextStatus} this withdrawal of NPR ${amount}?`)) {
+                
+                if (isApproved) {
+                    // Check user balance first to prevent negative exploit
+                    const userRef = db.ref('users/' + uid);
+                    const userSnap = await userRef.once('value');
+                    if (userSnap.exists()) {
+                        const curBal = parseFloat(userSnap.val().balance || 0);
+                        if (curBal < amount) {
+                            alert('PORTFOLIO CRITICAL: User has insufficient balance to approve this withdrawal!');
+                            return;
+                        }
+                        
+                        // Deduct user's balance on approval
+                        const newBal = curBal - amount;
+                        await userRef.update({ balance: newBal });
+
+                        // Update status in requests
+                        await db.ref('withdrawRequests/' + key).update({ status: nextStatus });
+
+                        // Log under tradeHistory as WITHDRAWAL (loss result)
+                        await db.ref('tradeHistory').push({
+                            uid: uid,
+                            type: 'WITHDRAWAL',
+                            amount: amount,
+                            result: 'loss',
+                            timestamp: Date.now(),
+                            oldBalance: curBal,
+                            newBalance: newBal
+                        });
+                        showToast(`Withdrawal successfully approved and portfolio deducted!`, 'success');
+                    }
+                } else {
+                    // Rejected withdrawal does not deduct balance
+                    await db.ref('withdrawRequests/' + key).update({ status: nextStatus });
+                    showToast(`Withdrawal successfully rejected!`, 'success');
+                }
+            }
+        };
+
+        // Render Security & Trade Logs Table
+        function renderLogsTable() {
+            const body = document.getElementById('logsTableBody');
+            let html = '';
+
+            const logsArr = Object.entries(globalTradeHistory);
+            if (logsArr.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim);">No platform activity logged yet</td></tr>';
+                return;
+            }
+
+            // sort newest first
+            logsArr.sort((a, b) => b[1].timestamp - a[1].timestamp);
+
+            // Cap at 250 rows for performance
+            logsArr.slice(0, 250).forEach(([key, log]) => {
+                const userEmail = globalUsers[log.uid]?.email || log.uid;
+                const logDate = new Date(log.timestamp).toLocaleString();
+                
+                // Styling based on action type
+                let color = 'white';
+                if (log.type === 'LOSS' || log.type === 'DEDUCTION' || log.type === 'WITHDRAWAL') color = 'var(--down)';
+                if (log.type === 'WIN' || log.type === 'CREDIT' || log.type === 'DEPOSIT') color = 'var(--up)';
+
+                const resultStr = log.type === 'LOSS' || log.result === 'loss' ? 'LOSS / DEDUCTED' : 'WIN / PORTFOLIO CREATED';
+
+                html += `
+                <tr>
+                    <td style="color:var(--text-dim); font-size:12px;">${logDate}</td>
+                    <td style="font-weight:600;">${userEmail}</td>
+                    <td>
+                        <span class="badge" style="background:rgba(255,255,255,0.03); border: 1px solid var(--border-glass); color:white;">${log.type || 'TRADE'}</span>
+                    </td>
+                    <td style="font-weight:700; color:${color};">${log.type === 'LOSS' || log.result === 'loss' ? '-' : '+'}NPR ${log.amount.toFixed(2)}</td>
+                    <td style="font-size:13px; color:var(--text-dim);">${resultStr} (Port: ${log.oldBalance ? log.oldBalance.toFixed(1) : '0'} → ${log.newBalance ? log.newBalance.toFixed(1) : '0'})</td>
+                </tr>
+                `;
+            });
+
+            body.innerHTML = html;
+        }
+
+        // Switch subtabs inside security logs panel
+        window.switchLogTab = (tab) => {
+            const tradeBtn = document.getElementById('btn-tab-tradelogs');
+            const loginBtn = document.getElementById('btn-tab-loginlogs');
+            const tradeContent = document.getElementById('tab-content-tradelogs');
+            const loginContent = document.getElementById('tab-content-loginlogs');
+
+            if (tab === 'trade') {
+                tradeBtn.style.borderColor = 'var(--accent)';
+                tradeBtn.style.color = 'var(--accent)';
+                loginBtn.style.borderColor = 'var(--border-glass)';
+                loginBtn.style.color = 'white';
+                tradeContent.style.display = 'block';
+                loginContent.style.display = 'none';
+            } else {
+                loginBtn.style.borderColor = 'var(--accent)';
+                loginBtn.style.color = 'var(--accent)';
+                tradeBtn.style.borderColor = 'var(--border-glass)';
+                tradeBtn.style.color = 'white';
+                tradeContent.style.display = 'none';
+                loginContent.style.display = 'block';
+            }
+        };
+
+        // Render Login Sessions logs
+        function renderLoginLogsTable() {
+            const body = document.getElementById('loginLogsTableBody');
+            let html = '';
+
+            const logsArr = Object.entries(globalLoginLogs);
+            if (logsArr.length === 0) {
+                body.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-dim);">No user login activity logged</td></tr>';
+                return;
+            }
+
+            // sort chronologically (newest first)
+            logsArr.sort((a, b) => b[1].timestamp - a[1].timestamp);
+
+            // Cap at 250 records
+            logsArr.slice(0, 250).forEach(([key, log]) => {
+                const logDate = new Date(log.timestamp).toLocaleString();
+                html += `
+                <tr>
+                    <td style="color:var(--text-dim); font-size:12px;">${logDate}</td>
+                    <td style="font-weight:700;">${log.email || 'Anonymous'}</td>
+                    <td>${log.name || 'Trader'}</td>
+                    <td style="font-family:monospace; color:var(--accent); font-size:12px;">${log.uid}</td>
+                </tr>
+                `;
+            });
+
+            body.innerHTML = html;
+        }
+
+        // Save Global Limits & Payment settings
+        window.saveSystemSettings = function() {
+            const minDep = parseFloat(document.getElementById('cfg-min-dep').value) || 100;
+            const maxDep = parseFloat(document.getElementById('cfg-max-dep').value) || 100000;
+            const minWit = parseFloat(document.getElementById('cfg-min-wit').value) || 200;
+            const maxWit = parseFloat(document.getElementById('cfg-max-wit').value) || 50000;
+            const minTrd = parseFloat(document.getElementById('cfg-min-trd').value) || 300;
+            const maxTrd = parseFloat(document.getElementById('cfg-max-trd').value) || 10000;
+            const qrUrl = document.getElementById('cfg-qr-url').value.trim();
+            const maxTradesDay = parseInt(document.getElementById('cfg-max-trades-day').value) || 50;
+            const minInterval = parseInt(document.getElementById('cfg-min-interval-trd').value) || 5;
+            let winRateVal = parseFloat(document.getElementById('cfg-win-rate').value);
+            if (isNaN(winRateVal)) winRateVal = 0.10;
+            // convert percent input to fraction if needed
+            if (winRateVal > 1) winRateVal = winRateVal / 100;
+
+            db.ref('adminSettings').set({
+                minDeposit: minDep,
+                maxDeposit: maxDep,
+                minWithdraw: minWit,
+                maxWithdraw: maxWit,
+                minTrade: minTrd,
+                maxTrade: maxTrd,
+                maxTradesPerDay: maxTradesDay,
+                minIntervalBetweenTradesSec: minInterval,
+                winRate: winRateVal,
+                qrImage: qrUrl
+            }).then(() => {
+                showToast('System configuration saved successfully!', 'success');
+            }).catch(err => {
+                showToast(err.message, 'error');
+            });
+        };
+
+        // Toggle Responsive Sidebar - MOVED TO GLOBAL SCOPE ABOVE
+
+        // Toast notifications logic
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast-notify ${type}`;
+            
+            let icon = '<i class="fas fa-check-circle" style="color:var(--up);"></i>';
+            if (type === 'error') icon = '<i class="fas fa-exclamation-circle" style="color:var(--down);"></i>';
+            
+            toast.innerHTML = `${icon} <span>${message}</span>`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse forwards';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        // Admin Security Handler Login
+        window.handleAdminLogin = async () => {
+            const email = document.getElementById('adminEmail').value.trim();
+            const pass = document.getElementById('adminPassword').value;
+            const errEl = document.getElementById('authError');
+            errEl.innerText = '';
+
+            if (!email || !pass) {
+                errEl.innerText = 'Please complete both fields.';
+                return;
+            }
+
+            try {
+                document.getElementById('loadingScreen').style.visibility = 'visible';
+                document.getElementById('loadingScreen').style.opacity = '1';
+                await auth.signInWithEmailAndPassword(email, pass);
+            } catch (e) {
+                document.getElementById('loadingScreen').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('loadingScreen').style.visibility = 'hidden';
+                }, 500);
+                errEl.innerText = e.message;
+            }
+        };
+
+        // Admin Security Handler Google Login
+        window.handleAdminGoogleLogin = async () => {
+            const errEl = document.getElementById('authError');
+            errEl.innerText = '';
+            try {
+                document.getElementById('loadingScreen').style.visibility = 'visible';
+                document.getElementById('loadingScreen').style.opacity = '1';
+                await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+            } catch (e) {
+                document.getElementById('loadingScreen').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('loadingScreen').style.visibility = 'hidden';
+                }, 500);
+                errEl.innerText = e.message;
+            }
+        };
+
+        // Admin Security Handler SignOut
+        window.handleSignOut = () => {
+            auth.signOut().then(() => {
+                currentAdmin = null;
+                document.getElementById('authOverlay').style.display = 'flex';
+                document.getElementById('deniedOverlay').style.display = 'none';
+            });
+        };
+    </script>
+</body>
+</html>
